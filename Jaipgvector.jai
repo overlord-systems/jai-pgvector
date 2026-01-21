@@ -1,7 +1,8 @@
 #import "Jaipg";
 #import "Basic";
 
-register_pgvector_handler :: (pg_conn: PGconn) -> (err_msg: string) {
+// This does a synchronous DB query
+register_pgvector_handler :: (pg_conn: *PGconn) -> (err_msg: string) {
 
     Pgvector_Oids :: struct {
         vector_oid: Oid;
@@ -16,7 +17,7 @@ SELECT to_regtype('vector')::oid AS "vector_oid"
 JAI
 
     rows: []Pgvector_Oids;
-    rows=, success := execute(*pg_conn, Pgvector_Oids, QUERY);
+    rows=, success := execute(pg_conn, Pgvector_Oids, QUERY);
     if !success return "failed to run postgres query to get pgvector OIDs";
 
     if rows.count == 0 return "no rows returned when querying pgvector OIDs. Do you have pgvector installed and activated on this database?";
@@ -28,6 +29,36 @@ JAI
     if !success return "got pgvector OIDs from DB but registering them with Jaipg failed. Do you already have a pgvector handler registered?";
 
     return "";
+}
+
+/*
+By default this will round to 6 digits after the dot, but float32 has a maximum of 7 digits after the dot.
+
+If you want to show 7 dots, you can do:
+    old_float_formatter_trailing_width := context.print_style.default_format_float.trailing_width;
+    context.print_style.default_format_float.trailing_width = 7;
+
+    floats_to_pgvector_string(.[1, 0.1234567]);
+
+    defer context.print_style.default_format_float.trailing_width = old_float_formatter_trailing_width;
+
+Note that the downside to this approach is that the returned string will be:
+    [1        ,0.1234567]
+
+Without this adjustment, the returned string is:
+    [1,0.123457] // Note the rounding of ..567->..57
+*/
+floats_to_pgvector_string :: (floats: []float) -> string {
+
+    // We set FormatArray explicitly so we don't break if the default array formatter changes
+    return sprint("%", FormatArray.{
+        value = floats,
+        separator = ",",
+        begin_string = "[",
+        end_string = "]",
+        draw_separator_after_last_element = false,
+        stop_printing_after_this_many_elements = -1,
+    });
 }
 
 #scope_module
@@ -45,7 +76,7 @@ pgvector_vector_handler :: (name: string, info: *Type_Info, slot: *u8, col_type:
         return false;
     }
 
-    vector_bytes: []u8 = .{count=len, data=data};
+    vector_bytes: []u8 = {count=len, data=data};
     element_size := array_info.element_type.runtime_size;
     dims := pgvector_get_dims_from_vector_bytes(vector_bytes);
     if element_size != 4 {
@@ -55,9 +86,9 @@ pgvector_vector_handler :: (name: string, info: *Type_Info, slot: *u8, col_type:
     if array_info.array_type == .VIEW {
 
         view := (cast(*Array_View_64) slot);
-        
+
         floats := pgvector_vector_bytes_to_floats(vector_bytes);
-        
+
         view.count = floats.count;
         view.data = floats.data.(*u8);
 
@@ -68,16 +99,16 @@ pgvector_vector_handler :: (name: string, info: *Type_Info, slot: *u8, col_type:
         array_reserve(resizable_array, dims, element_size);
         resizable_array.count = dims;
 
-        pgvector_vector_bytes_to_floats_buf(vector_bytes, .{count=dims, data=resizable_array.data.(*float)});
+        pgvector_vector_bytes_to_floats_buf(vector_bytes, {count=dims, data=resizable_array.data.(*float)});
 
     } else {
-        
+
         if array_info.array_count != dims {
             log_error("Error: Trying to write column % of type % with array count % into member field \"%\", which is a fixed-size array with count %. For fixed-size arrays, the size must match!", col, col_type, dims, name, array_info.array_count);
             return false;
         }
-        
-        pgvector_vector_bytes_to_floats_buf(vector_bytes, .{count=dims, data=slot.(*float)});
+
+        pgvector_vector_bytes_to_floats_buf(vector_bytes, {count=dims, data=slot.(*float)});
     }
 
     return true;
@@ -102,7 +133,7 @@ pgvector_vector_bytes_to_floats :: (vector: []u8) -> []float {
 }
 
 // This parses the input bytes and writes to the 'out' buffer.
-// Note that its required that: out.count == pgvector_get_dims_from_vector_bytes(vector) 
+// Note that its required that: out.count == pgvector_get_dims_from_vector_bytes(vector)
 pgvector_vector_bytes_to_floats_buf :: (vector: []u8, out: []float) {
 
     // At least as of pgvector 0.8.0, when responding in binary mode, pgvector prefixes
