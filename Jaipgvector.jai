@@ -1,8 +1,15 @@
 #import "Jaipg";
 #import "Basic";
 
+Register_Pgvector_Err :: enum {
+    OK;
+    QUERY_ERR;
+    NOT_INSTALLED;
+    REGISTER_ERR;
+}
+
 // This does a synchronous DB query
-register_pgvector_handler :: (pg_conn: *PGconn) -> (err_msg: string) {
+register_pgvector_handler :: (pg_conn: *PGconn) -> err: Register_Pgvector_Err {
 
     Pgvector_Oids :: struct {
         vector_oid: Oid;
@@ -12,23 +19,23 @@ register_pgvector_handler :: (pg_conn: *PGconn) -> (err_msg: string) {
     //
     // SELECT to_regtype('vector')::oid, to_regtype('_vector')::oid, to_regtype('halfvec')::oid, to_regtype('_halfvec')::oid, to_regtype('sparsevec')::oid, to_regtype('_sparsevec')::oid
 
-    QUERY :: #string JAI
+    QUERY :: #string EOF
 SELECT to_regtype('vector')::oid AS "vector_oid"
-JAI
+EOF
 
     rows: []Pgvector_Oids;
     rows=, success := execute(pg_conn, Pgvector_Oids, QUERY);
-    if !success return "failed to run postgres query to get pgvector OIDs";
+    if !success return .QUERY_ERR;
 
-    if rows.count == 0 return "no rows returned when querying pgvector OIDs. Do you have pgvector installed and activated on this database?";
+    if rows.count == 0 return .NOT_INSTALLED;
 
     result := rows[0];
-    if result.vector_oid == 0 return "no 'vector' type OID found. Do you have pgvector installed and activated on this database?";
+    if result.vector_oid == 0 return .NOT_INSTALLED;
 
     success = register_pg_type_handler(result.vector_oid, "vector", pgvector_vector_handler);
-    if !success return "got pgvector OIDs from DB but registering them with Jaipg failed. Do you already have a pgvector handler registered?";
+    if !success return .REGISTER_ERR;
 
-    return "";
+    return .OK;
 }
 
 /*
